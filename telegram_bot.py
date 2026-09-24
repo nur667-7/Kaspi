@@ -1,8 +1,14 @@
+import sys
 import time
 import json
 import urllib.request
 import urllib.parse
 from typing import Dict, Any, Optional, List
+
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8')
 
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, NICHES, get_niche, get_chat_id_for_niche, WA_BRIDGE_URL
 from telegram_notifier import TelegramNotifier
@@ -65,6 +71,11 @@ class TelegramBotController:
         )
         keyboard = {
             "inline_keyboard": [
+                [{"text": "⚡ Запустить цикл (Старт ➔ Постинг ➔ Стоп)", "callback_data": "act:run_full_cycle"}],
+                [
+                    {"text": "🟢 Поднять сервер", "callback_data": "act:start_server"},
+                    {"text": "🔴 Выключить сервер", "callback_data": "act:stop_server"}
+                ],
                 [{"text": "⚙️ Настройки ниш и цен", "callback_data": "menu:niches"}],
                 [{"text": "🔍 Спарсить товары сейчас", "callback_data": "menu:parse_select"}],
                 [{"text": "📊 Краткая аналитика", "callback_data": "act:analytics"}],
@@ -309,6 +320,42 @@ class TelegramBotController:
         # Аналитика
         elif data == "act:analytics":
             self.notifier.send_analytics_only()
+
+        # Ручное поднятие WhatsApp-сервера
+        elif data == "act:start_server":
+            from daily_runner import is_bridge_online, ensure_bridge_running
+            if is_bridge_online():
+                self.notifier.send_message("✅ WhatsApp-сервер уже запущен и готов к работе!", chat_id=chat_id)
+            else:
+                self.notifier.send_message("⏳ Поднимаю WhatsApp-сервер на ноутбуке...", chat_id=chat_id)
+                ok = ensure_bridge_running()
+                if ok:
+                    self.notifier.send_message("🟢 <b>WhatsApp-сервер успешно запущен!</b>", chat_id=chat_id)
+                else:
+                    self.notifier.send_message("❌ Не удалось поднять WhatsApp-сервер. Проверьте QR-код или статус моста.", chat_id=chat_id)
+
+        # Ручное выключение WhatsApp-сервера
+        elif data == "act:stop_server":
+            from daily_runner import stop_bridge
+            self.notifier.send_message("⏳ Останавливаю WhatsApp-сервер...", chat_id=chat_id)
+            stop_bridge()
+            self.notifier.send_message("🛑 <b>WhatsApp-сервер выключен.</b> Ресурсы ноутбука свободны.", chat_id=chat_id)
+
+        # Полный автоматический цикл (поднятие сервера ➔ парсинг ➔ отправка ➔ выключение сервера)
+        elif data == "act:run_full_cycle":
+            self.notifier.send_message(
+                "⚡ <b>Запуск разового цикла:</b>\n"
+                "1. Поднятие WhatsApp-сервера\n"
+                "2. Парсинг и отбор товаров Kaspi\n"
+                "3. Отправка по 1 карточке во все каналы\n"
+                "4. Отчёт с аналитикой\n"
+                "5. Автоматическое выключение сервера...",
+                chat_id=chat_id
+            )
+            from daily_runner import run_session, stop_bridge
+            run_session(dry_run=False)
+            stop_bridge()
+            self.notifier.send_message("💤 <b>Сессия завершена:</b> WhatsApp-сервер автоматически выключен.", chat_id=chat_id)
 
         # Отправка товаров во все каналы
         elif data == "act:post_all_wa":

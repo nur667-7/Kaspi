@@ -380,6 +380,18 @@ app.post('/send', async (req, res) => {
     }
 });
 
+// Эндпоинт для удалённой корректной остановки сервера из Python/Telegram
+app.post('/shutdown', (req, res) => {
+    console.log('[Bridge Server] Получена команда на завершение работы...');
+    res.json({ success: true, message: 'Сервер останавливается' });
+    setTimeout(() => {
+        if (sock) {
+            try { sock.end(); } catch (e) {}
+        }
+        process.exit(0);
+    }, 1000);
+});
+
 app.listen(PORT, '127.0.0.1', () => {
     console.log(`[Bridge Server] HTTP API запущен на http://127.0.0.1:${PORT}`);
     connectToWhatsApp();

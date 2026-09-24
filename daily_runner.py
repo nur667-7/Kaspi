@@ -150,6 +150,33 @@ def ensure_bridge_running() -> bool:
     return False
 
 
+def stop_bridge() -> bool:
+    """Удалённо останавливает WhatsApp мост и освобождает память ноутбука."""
+    if not is_bridge_online():
+        log("ℹ️ WhatsApp мост уже остановлен.")
+        return True
+
+    try:
+        req = urllib.request.Request(
+            f"{WA_BRIDGE_URL}/shutdown",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            log("🛑 WhatsApp мост успешно выключен.")
+            return True
+    except Exception:
+        # Fallback на завершение процесса через OS Windows
+        try:
+            subprocess.run(["taskkill", "/F", "/IM", "node.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            log("🛑 Процесс Node.js принудительно остановлен.")
+            return True
+        except Exception as e:
+            log(f"⚠️ Не удалось остановить процесс node.exe: {e}")
+            return False
+
+
 def replenish_buffer_if_needed(min_threshold: int = 2, fetch_limit: int = 4):
     """
     Проверяет банк товаров каждой ниши.
