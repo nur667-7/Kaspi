@@ -38,6 +38,7 @@ from kaspi_parser import KaspiParser
 from google_sheets_sync import GoogleSheetsSync
 from copywriter import Copywriter
 from social_exporter import SocialExporter
+from telegram_notifier import TelegramNotifier
 
 LOG_FILE = os.path.join(BASE_DIR, "daily_run.log")
 TEMP_DIR = os.path.join(BASE_DIR, "temp")
@@ -189,16 +190,19 @@ def replenish_buffer_if_needed(min_threshold: int = 2, fetch_limit: int = 4):
                 log(f"  ⚠️ Ошибка генерации текста для поста #{p['id']}: {e}")
 
 
-def post_one_item_per_niche(dry_run: bool = False) -> int:
+def post_one_item_per_niche(dry_run: bool = False) -> tuple[int, List[Dict[str, Any]]]:
     """
     Публикует строго по 1 товару в каждую из 6 ниш.
     При утреннем и вечернем запуске суммарно дает ровно 2 товара в день на нишу.
+    Возвращает (количество отправленных, список отправленных товаров).
     """
     cw = Copywriter()
     exporter = SocialExporter()
+    tg = TelegramNotifier()
     os.makedirs(TEMP_DIR, exist_ok=True)
 
     sent_count = 0
+    posted_items = []
 
     for n_key, n_cfg in NICHES.items():
         chat_id = get_chat_id_for_niche(n_key)
@@ -230,6 +234,13 @@ def post_one_item_per_niche(dry_run: bool = False) -> int:
         if dry_run:
             log(f"🔍 [DRY-RUN] Ниша '{n_cfg.name}': был бы отправлен товар #{kaspi_id} ({title[:35]}...) в {chat_id}")
             sent_count += 1
+            posted_items.append({
+                "title": title,
+                "niche": n_key,
+                "niche_name": n_cfg.name,
+                "price": post.get("price", 0),
+                "kaspi_id": kaspi_id
+            })
             continue
 
         try:
@@ -257,13 +268,25 @@ def post_one_item_per_niche(dry_run: bool = False) -> int:
                     msg_id = res.get("messageId", "ok")
                     mark_post_published_wa(post_id, chat_id, msg_id)
                     sent_count += 1
+                    posted_items.append({
+                        "title": title,
+                        "niche": n_key,
+                        "niche_name": n_cfg.name,
+                        "price": post.get("price", 0),
+                        "kaspi_id": kaspi_id
+                    })
                     log(f"✅ [{n_cfg.name}] Опубликовано: #{kaspi_id} «{title[:30]}...» (MsgID: {msg_id})")
+
+                    # Отправляем краткий отчёт по карточке в Telegram
+                    tg.notify_product_posted(post, chat_name_or_id=n_cfg.name, success=True)
                 else:
                     mark_post_failed_wa(post_id)
                     log(f"❌ [{n_cfg.name}] Ошибка отправки моста: {res}")
+                    tg.notify_product_posted(post, chat_name_or_id=n_cfg.name, success=False, error=str(res))
         except Exception as e:
             mark_post_failed_wa(post_id)
             log(f"❌ [{n_cfg.name}] Исключение при отправке #{kaspi_id}: {e}")
+            tg.notify_product_posted(post, chat_name_or_id=n_cfg.name, success=False, error=str(e))
         finally:
             # МГНОВЕННОЕ удаление временного файла — Zero Trash Policy
             if os.path.exists(local_branded_img):
@@ -275,16 +298,16 @@ def post_one_item_per_niche(dry_run: bool = False) -> int:
         # Пауза между сообщениями против спам-фильтров WhatsApp
         time.sleep(3.0)
 
-    return sent_count
+    return sent_count, posted_items
 
 
 def run_session(dry_run: bool = False):
     """Полная рабочая сессия (утренняя или вечерняя)."""
     start_time = time.time()
-    session_label = "УТРЕННИЙ" if datetime.now().hour < 15 else "ВЕЧЕРНИЙ"
+    session_label = "Утренний" if datetime.now().hour < 15 else "Вечерний"
 
     log("=" * 60)
-    log(f"🚀 СТАРТ АВТОМАТИЧЕСКОЙ СЕССИИ [{session_label} ЗАПУСК]")
+    log(f"🚀 СТАРТ АВТОМАТИЧЕСКОЙ СЕССИИ [{session_label.upper()} ЗАПУСК]")
     log("=" * 60)
 
     # 1. Зачистка до начала работы
@@ -294,13 +317,15 @@ def run_session(dry_run: bool = False):
     # 2. Проверка и поднятие моста
     if not dry_run and not ensure_bridge_running():
         log("❌ Сессия прервана: WhatsApp мост недоступен.")
+        tg = TelegramNotifier()
+        tg.send_message(f"⚠️ <b>Внимание:</b> Сессия {session_label} прервана, так как WhatsApp мост недоступен!")
         return
 
     # 3. Проверка и пополнение буфера товаров
     replenish_buffer_if_needed(min_threshold=2, fetch_limit=4)
 
     # 4. Отправка ровно по 1 товару в каждую нишу
-    total_posted = post_one_item_per_niche(dry_run=dry_run)
+    total_posted, posted_items = post_one_item_per_niche(dry_run=dry_run)
 
     # 5. Финальная зачистка временных файлов (Zero Trash Policy)
     purge_temp()
@@ -309,6 +334,15 @@ def run_session(dry_run: bool = False):
     log("=" * 60)
     log(f"🎉 СЕССИЯ ЗАВЕРШЕНА: Опубликовано {total_posted} товаров за {elapsed} сек. Диск чист (0 мусора).")
     log("=" * 60 + "\n")
+
+    # 6. Отправка сводного отчета и краткой аналитики в Telegram
+    tg = TelegramNotifier()
+    tg.send_session_report(
+        session_name=session_label,
+        posted_count=total_posted,
+        elapsed_sec=elapsed,
+        items_summary=posted_items
+    )
 
 
 if __name__ == "__main__":

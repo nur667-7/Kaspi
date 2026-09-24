@@ -35,6 +35,10 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # Webhook URL Google Таблицы
 GOOGLE_SHEETS_WEBHOOK_URL = os.getenv("GOOGLE_SHEETS_WEBHOOK_URL", "")
 
+# Telegram Bot уведомления и отчёты
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
 @dataclass
 class NicheConfig:
     slug: str

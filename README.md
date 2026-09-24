@@ -161,6 +161,15 @@ python main.py post-wa --niche auto --limit 1
 # Генерация TikTok/Reels слайдов (9:16)
 python main.py build-slides --niche men_clothing --count 4
 
+# Запуск Telegram-бота управления (кнопки, диапазоны цен, модерация)
+python main.py bot
+
+# Проверка связи с Telegram-ботом
+python main.py test-tg
+
+# Отправка текущей аналитики каталога и очереди в Telegram
+python main.py tg-analytics
+
 # Автономный пайплайн в 1 команду
 python main.py pipeline --niche all --limit 4
 ```
@@ -181,15 +190,18 @@ Kaspi/
 │
 ├── main.py                       # Главный CLI интерфейс командной строки
 ├── config.py                     # Конфигурация, ниши, ценовые пороги, параметры
-├── kaspi_parser.py               # Модуль парсинга каталога Kaspi.kz
+├── kaspi_parser.py               # Модуль парсинга каталога Kaspi.kz с фильтрами цен
 ├── copywriter.py                 # Генератор продающих текстов (Gemini AI / Шаблоны)
+├── telegram_notifier.py          # Модуль отчетов и сводной аналитики в Telegram
+├── telegram_bot.py               # Интерактивный Telegram-пульт управления (кнопки, пресеты цен, модерация)
 ├── slide_builder.py              # Рендерер вертикальных слайдов 9:16 (Pillow)
 ├── social_exporter.py            # Менеджер структурированного экспорта в Google Drive
-├── storage.py                    # SQLite хранилище товаров, истории и статусов
+├── storage.py                    # SQLite хранилище товаров, истории и кастомных настроек ниш
 ├── google_sheets_sync.py         # Модуль синхронизации с Google Таблицами
 ├── sheets_client.py              # Клиент для чтения данных из Google Таблиц
 ├── daily_runner.py               # Автономный раннер ежедневных утренних и вечерних запусков
 │
+├── run_bot.bat                   # Быстрый запуск Telegram-пульта управления
 ├── setup_scheduler.bat           # Установка задач в Планировщик Windows (10:00 и 19:00)
 ├── remove_scheduler.bat          # Удаление задач из Планировщика Windows
 ├── run_daily.bat                 # Пакетный скрипт запуска пайплайна

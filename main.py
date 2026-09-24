@@ -29,6 +29,7 @@ from kaspi_parser import KaspiParser
 from copywriter import Copywriter
 from social_exporter import SocialExporter
 from google_sheets_sync import GoogleSheetsSync
+from telegram_notifier import TelegramNotifier
 
 def cmd_list_niches(args):
     """Выводит список всех настроенных ниш."""
@@ -116,6 +117,9 @@ def cmd_post_wa(args):
     total_sent = 0
     processed_niches = set()
 
+    tg = TelegramNotifier()
+    posted_items_for_report = []
+
     for niche_key in target_niches:
         pending = get_pending_wa_posts(niche=niche_key, limit=args.limit)
         if not pending:
@@ -175,13 +179,23 @@ def cmd_post_wa(args):
                         mark_post_published_wa(post_id, chat_id, msg_id)
                         processed_niches.add(niche_key)
                         total_sent += 1
+                        posted_items_for_report.append({
+                            "title": post.get("title", ""),
+                            "niche": niche_key,
+                            "niche_name": n_name,
+                            "price": post.get("price", 0),
+                            "kaspi_id": post.get("kaspi_id")
+                        })
                         print(f"  ✅ Успешно опубликовано! (ID: {msg_id})")
+                        tg.notify_product_posted(post, chat_name_or_id=n_name, success=True)
                     else:
                         mark_post_failed_wa(post_id)
                         print(f"  ❌ Ошибка отправки: {res}")
+                        tg.notify_product_posted(post, chat_name_or_id=n_name, success=False, error=str(res))
             except Exception as e:
                 mark_post_failed_wa(post_id)
                 print(f"  ❌ Ошибка при отправке через мост: {e}")
+                tg.notify_product_posted(post, chat_name_or_id=n_name, success=False, error=str(e))
             finally:
                 # Мгновенное удаление временного брендированного фото — zero trash policy
                 if image_to_send and os.path.exists(image_to_send) and "temp" in image_to_send:
@@ -200,6 +214,14 @@ def cmd_post_wa(args):
                 os.remove(os.path.join(temp_dir, f))
             except Exception:
                 pass
+
+    if total_sent > 0:
+        tg.send_session_report(
+            session_name="Ручной запуск post-wa",
+            posted_count=total_sent,
+            elapsed_sec=0.0,
+            items_summary=posted_items_for_report
+        )
 
     # Сборка слайдов в Google Drive ТОЛЬКО если явно передан флаг --carousels
     if getattr(args, 'carousels', False) and processed_niches:
@@ -548,6 +570,36 @@ def cmd_update_descriptions(args):
         print("\n✅ Все 7 описаний успешно обновлены в каналах!")
     else:
         print(f"\n❌ Ошибка обновления описаний (код {res.returncode})")
+def cmd_test_tg(args):
+    """Проверяет подключение к Telegram-боту и отправляет тестовое сообщение."""
+    tg = TelegramNotifier()
+    if not tg.is_configured():
+        print("❌ Ошибка: TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID не настроены в .env!")
+        return
+    print(f"📡 Отправка тестового отчёта на Telegram (Chat ID: {tg.chat_id})...")
+    ok = tg.send_message("🔔 <b>Тест Telegram-бота:</b> Связь с ботом Kaspi успешно установлена!\nВы будете получать краткие отчёты по публикациям и аналитике.", parse_mode="HTML")
+    if ok:
+        print("✅ Тестовое сообщение успешно доставлено в ваш Telegram!")
+    else:
+        print("❌ Не удалось отправить сообщение. Проверьте правильность токена и Chat ID.")
+
+def cmd_tg_analytics(args):
+    """Отправляет свежую аналитику по каталогу и буферу очереди прямо в Telegram."""
+    tg = TelegramNotifier()
+    if not tg.is_configured():
+        print("❌ Ошибка: TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID не настроены в .env!")
+        return
+    print("📊 Формирование и отправка краткой аналитики в Telegram...")
+    ok = tg.send_analytics_only()
+    if ok:
+        print("✅ Краткая аналитика успешно отправлена в ваш Telegram!")
+    else:
+        print("❌ Ошибка отправки аналитики в Telegram.")
+def cmd_run_bot(args):
+    """Запускает интерактивный пульт управления ботом Telegram (кнопки, диапазоны цен, модерация)."""
+    from telegram_bot import TelegramBotController
+    controller = TelegramBotController()
+    controller.run_polling()
 
 def main():
     parser = argparse.ArgumentParser(description="Kaspi to WhatsApp & Social Media Automation Pipeline")
@@ -620,6 +672,15 @@ def main():
     subparsers.add_parser("set-descriptions", help="Обновить конверсионные описания во всех 6 нишах WhatsApp")
     subparsers.add_parser("update-descriptions", help="Обновить конверсионные описания во всех 6 нишах WhatsApp (синоним set-descriptions)")
 
+    # test-tg
+    subparsers.add_parser("test-tg", help="Проверить отправку тестового отчёта в Telegram")
+
+    # tg-analytics
+    subparsers.add_parser("tg-analytics", help="Отправить отчёт с аналитикой каталога и очереди в Telegram")
+
+    # bot
+    subparsers.add_parser("bot", help="Запустить Telegram-бота управления (кнопки, диапазоны цен, модерация)")
+
     args = parser.parse_args()
 
     dispatch = {
@@ -638,7 +699,10 @@ def main():
         "create-community": cmd_create_community,
         "set-avatar": cmd_set_avatar,
         "set-descriptions": cmd_update_descriptions,
-        "update-descriptions": cmd_update_descriptions
+        "update-descriptions": cmd_update_descriptions,
+        "test-tg": cmd_test_tg,
+        "tg-analytics": cmd_tg_analytics,
+        "bot": cmd_run_bot
     }
 
     dispatch[args.command](args)

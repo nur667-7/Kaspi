@@ -6,7 +6,7 @@ import logging
 from typing import List, Dict, Any, Optional
 
 from config import DEFAULT_CITY_ID, get_niche
-from storage import product_exists
+from storage import product_exists, get_niche_settings
 
 logger = logging.getLogger("kaspi_parser")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -93,28 +93,44 @@ class KaspiParser:
     def parse_niche(
         self,
         niche_key: str,
+        min_price: Optional[int] = None,
         max_price: Optional[int] = None,
         min_rating: Optional[float] = None,
         min_reviews: Optional[int] = None,
+        custom_focus: Optional[str] = None,
         limit: int = 5
     ) -> List[Dict[str, Any]]:
         """
         Ищет качественные товары по нише, фильтрует и обогащает характеристиками.
         Пропускает товары, которые уже есть в локальной базе данных.
+        Учитывает кастомный поисковый фокус и диапазон цен из базы.
         """
         niche = get_niche(niche_key)
         if not niche:
             raise ValueError(f"Неизвестная ниша: {niche_key}")
 
-        target_max_price = max_price if max_price is not None else niche.default_max_price
-        target_min_rating = min_rating if min_rating is not None else niche.min_rating
-        target_min_reviews = min_reviews if min_reviews is not None else niche.min_reviews
+        settings = get_niche_settings(niche_key)
+
+        target_min_price = min_price if min_price is not None else settings.get("min_price", 0)
+        target_max_price = max_price if max_price is not None else (settings.get("max_price") or niche.default_max_price)
+        target_min_rating = min_rating if min_rating is not None else (settings.get("min_rating") or niche.min_rating)
+        target_min_reviews = min_reviews if min_reviews is not None else (settings.get("min_reviews") or niche.min_reviews)
+        focus = custom_focus if custom_focus is not None else settings.get("custom_focus", "")
 
         found_products: List[Dict[str, Any]] = []
 
-        logger.info(f"Начинаем поиск для ниши '{niche.name}' (макс. цена: {target_max_price} ₸, мин. рейтинг: {target_min_rating})")
+        # Формируем список поисковых фраз: если задано направление, оно в приоритете!
+        search_queries = []
+        if focus and focus.strip():
+            search_queries.append(focus.strip())
+        search_queries.extend([k for k in niche.keywords if k.lower() != (focus or "").strip().lower()])
 
-        for kw in niche.keywords:
+        logger.info(
+            f"Начинаем поиск для ниши '{niche.name}' (цена: {target_min_price}..{target_max_price} ₸, "
+            f"мин. рейтинг: {target_min_rating}, фокус: '{focus or 'стандарт'}')"
+        )
+
+        for kw in search_queries:
             if len(found_products) >= limit:
                 break
 
@@ -139,9 +155,9 @@ class KaspiParser:
                     if product_exists(kaspi_id):
                         continue
 
-                    # 2. Фильтрация по цене
+                    # 2. Фильтрация по диапазону цен
                     unit_price = item.get("unitPrice", 0)
-                    if not unit_price or unit_price > target_max_price:
+                    if not unit_price or unit_price < target_min_price or unit_price > target_max_price:
                         continue
 
                     # 3. Фильтрация по рейтингу

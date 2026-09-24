@@ -66,11 +66,91 @@ def init_db():
         )
         """)
         
+        # Таблица кастомных настроек ниш (диапазон цен, рейтинг, направление поиска)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS niche_settings (
+            niche TEXT PRIMARY KEY,
+            min_price INTEGER DEFAULT 0,
+            max_price INTEGER,
+            min_rating REAL DEFAULT 4.7,
+            min_reviews INTEGER DEFAULT 15,
+            custom_focus TEXT,
+            is_active INTEGER DEFAULT 1,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+
         # Индексы для быстрого поиска
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_products_niche ON products(niche)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_posts_wa_status ON posts(wa_status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_posts_tt_status ON posts(tt_status)")
         conn.commit()
+
+def get_niche_settings(niche: str) -> Dict[str, Any]:
+    """Возвращает настройки фильтрации и подниши для указанной ниши."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM niche_settings WHERE niche = ?", (niche,))
+        row = cursor.fetchone()
+        if row:
+            return dict(row)
+        return {
+            "niche": niche,
+            "min_price": 0,
+            "max_price": None,
+            "min_rating": 4.7,
+            "min_reviews": 15,
+            "custom_focus": "",
+            "is_active": 1
+        }
+
+def save_niche_settings(niche: str, **kwargs):
+    """Обновляет или создает настройки ниши в базе."""
+    current = get_niche_settings(niche)
+    current.update({k: v for k, v in kwargs.items() if v is not None})
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+        INSERT INTO niche_settings (niche, min_price, max_price, min_rating, min_reviews, custom_focus, is_active, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(niche) DO UPDATE SET
+            min_price = excluded.min_price,
+            max_price = excluded.max_price,
+            min_rating = excluded.min_rating,
+            min_reviews = excluded.min_reviews,
+            custom_focus = excluded.custom_focus,
+            is_active = excluded.is_active,
+            updated_at = CURRENT_TIMESTAMP
+        """, (
+            niche,
+            int(current.get("min_price") or 0),
+            int(current["max_price"]) if current.get("max_price") is not None else None,
+            float(current.get("min_rating") or 4.7),
+            int(current.get("min_reviews") or 15),
+            current.get("custom_focus") or "",
+            int(current.get("is_active", 1))
+        ))
+        conn.commit()
+
+def get_post_by_id(post_id: int) -> Optional[Dict[str, Any]]:
+    """Возвращает пост со всеми данными товара по его ID."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+        SELECT p.*, pr.title, pr.brand, pr.price, pr.price_before_discount, 
+               pr.rating, pr.reviews_quantity, pr.shop_link, pr.preview_images, 
+               pr.features, pr.seller_name
+        FROM posts p
+        JOIN products pr ON p.kaspi_id = pr.kaspi_id
+        WHERE p.id = ?
+        """, (post_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["images"] = json.loads(d["preview_images"]) if d.get("preview_images") else []
+        d["features_parsed"] = json.loads(d["features"]) if d.get("features") else []
+        return d
 
 def product_exists(kaspi_id: str) -> bool:
     """Проверяет наличие товара в базе."""
@@ -234,6 +314,72 @@ def get_db_stats() -> Dict[str, Any]:
             "by_niche": by_niche,
             "by_wa_status": by_wa_status,
             "by_tt_status": by_tt_status
+        }
+
+def get_analytics_summary() -> Dict[str, Any]:
+    """Возвращает детальную аналитику по товарам, публикации и буферу очереди."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+
+        # Общие цифры
+        cursor.execute("SELECT COUNT(*) FROM products")
+        total_products = cursor.fetchone()[0]
+
+        # Опубликовано сегодня
+        cursor.execute("""
+            SELECT COUNT(*) FROM posts 
+            WHERE wa_status = 'posted' 
+              AND DATE(wa_posted_at) = DATE('now')
+        """)
+        posted_today = cursor.fetchone()[0]
+
+        # Всего опубликовано в WhatsApp
+        cursor.execute("SELECT COUNT(*) FROM posts WHERE wa_status = 'posted'")
+        total_posted = cursor.fetchone()[0]
+
+        # Очередь (pending)
+        cursor.execute("SELECT COUNT(*) FROM posts WHERE wa_status = 'pending'")
+        total_pending = cursor.fetchone()[0]
+
+        # Средний чек и средний рейтинг товаров
+        cursor.execute("SELECT AVG(price), AVG(rating), MAX(price), MIN(price) FROM products")
+        row = cursor.fetchone()
+        avg_price = round(row[0] or 0)
+        avg_rating = round(row[1] or 0.0, 2)
+        max_price = row[2] or 0
+        min_price = row[3] or 0
+
+        # Статистика по нишам: сколько в очереди (pending) и сколько уже опубликовано
+        cursor.execute("""
+            SELECT 
+                p.niche,
+                COUNT(*) as total_niche,
+                SUM(CASE WHEN po.wa_status = 'pending' THEN 1 ELSE 0 END) as pending_cnt,
+                SUM(CASE WHEN po.wa_status = 'posted' THEN 1 ELSE 0 END) as posted_cnt,
+                ROUND(AVG(p.price)) as avg_niche_price
+            FROM products p
+            LEFT JOIN posts po ON p.kaspi_id = po.kaspi_id
+            GROUP BY p.niche
+        """)
+        niche_stats = {}
+        for r in cursor.fetchall():
+            niche_stats[r[0]] = {
+                "total": r[1],
+                "pending": r[2] or 0,
+                "posted": r[3] or 0,
+                "avg_price": r[4] or 0
+            }
+
+        return {
+            "total_products": total_products,
+            "posted_today": posted_today,
+            "total_posted": total_posted,
+            "total_pending": total_pending,
+            "avg_price": avg_price,
+            "avg_rating": avg_rating,
+            "min_price": min_price,
+            "max_price": max_price,
+            "niches": niche_stats
         }
 
 def get_all_products() -> List[Dict[str, Any]]:
